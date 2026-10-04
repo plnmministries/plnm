@@ -3,6 +3,7 @@ import { unstable_cache } from "next/cache";
 import type { SiteContent } from "./types";
 import { createSeed } from "./seed";
 import { hasDb, kvGet } from "./db";
+import { migrate } from "./migrate";
 
 // The public website doesn't store content itself. It reads the PUBLISHED content:
 //   1. straight from the shared database (DATABASE_URL, Neon), so it never waits on the admin app, or
@@ -38,7 +39,8 @@ export async function getContent(): Promise<SiteContent> {
     return createSeed();
   }
   try {
-    const data = await fetchPublished();
+    // apply one-time updates (e.g. new sections) even before the admin next publishes
+    const data = migrate(await fetchPublished());
     g.__plnmLastGood = data;
     return data;
   } catch (e) {
