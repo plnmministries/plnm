@@ -13,10 +13,12 @@ npm run dev
 
 ## How it connects to the admin
 
-- Pages read the **published** content from `CONTENT_API_URL/api/public/content` (cached for up to 60 s; Publish refreshes it instantly).
+- Pages read the **published** content straight from the shared Neon database (`DATABASE_URL`),
+  so a sleeping admin server never slows the site down. Without `DATABASE_URL` it falls back to
+  `CONTENT_API_URL/api/public/content`. Cached for up to 60 s; Publish refreshes it instantly.
 - When someone presses **Publish** in the admin, it calls `POST /api/revalidate` on this site
   (with `REVALIDATE_SECRET`) so changes appear immediately.
-- Uploaded images (`/media/...`) are proxied from the admin app.
+- Uploaded images (`/media/...`) are read from the same database.
 - If the admin is briefly unreachable, the last good copy keeps being served.
 
 ## Features
@@ -30,7 +32,8 @@ forms that open WhatsApp with the answers filled in.
 In Vercel: **Add New → Project →** import `plnm` (framework is detected as Next.js), then add these
 environment variables and deploy:
 
-- `CONTENT_API_URL`: the admin app on Render, e.g. `https://plnmadmin.onrender.com`
+- `DATABASE_URL`: the Neon connection string (added automatically if you create the Neon
+  database from this Vercel project's *Storage* tab)
 - `REVALIDATE_SECRET`: the same value Render generated for the admin app
 
 Note: the site's components (`src/components/site`) also exist in the admin app, which uses them
