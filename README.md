@@ -25,13 +25,13 @@ English / Telugu / Hindi (globe button, remembered per visitor), sermons that pl
 live-stream detection, events, UPI giving (PhonePe / Google Pay / Paytm + QR) and Get Connected
 forms that open WhatsApp with the answers filled in.
 
-## Deploy
+## Deploy (Vercel)
 
-Any Node host or Vercel. Set `CONTENT_API_URL` and `REVALIDATE_SECRET`, then:
+In Vercel: **Add New → Project →** import `plnm` (framework is detected as Next.js), then add these
+environment variables and deploy:
 
-```bash
-npm run build && npm start
-```
+- `CONTENT_API_URL`: the admin app on Render, e.g. `https://plnmadmin.onrender.com`
+- `REVALIDATE_SECRET`: the same value Render generated for the admin app
 
 Note: the site's components (`src/components/site`) also exist in the admin app, which uses them
 for its live preview. When changing a section's design, update both repos.
