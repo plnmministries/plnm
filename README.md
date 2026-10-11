@@ -27,6 +27,17 @@ English / Telugu / Hindi (globe button, remembered per visitor), sermons that pl
 live-stream detection, events, UPI giving (PhonePe / Google Pay / Paytm + QR) and Get Connected
 forms that open WhatsApp with the answers filled in.
 
+## Mobile app API
+
+This project also serves the Paralokanestham mobile app ([plnmapp](https://github.com/plnmministries/plnmapp))
+under `/api/app/*`: email-code login, profiles, push tokens, daily prayers, updates, prayer requests,
+volunteer replies and attendance. Data lives in the same Neon database (tables `app_*`); the admin app
+manages it. Settings: `APP_JWT_SECRET`, `CRON_SECRET`, `SMTP_URL`, `MAIL_FROM` (see `.env.example`).
+
+The scheduler `.github/workflows/app-cron.yml` runs every 30 minutes: it adds the channel's new
+"Daily Word" video as the day's prayer and sends the notification. It needs the repository secrets
+`SITE_URL` and `CRON_SECRET` (GitHub → Settings → Secrets and variables → Actions).
+
 ## Deploy (Vercel)
 
 In Vercel: **Add New → Project →** import `plnm` (framework is detected as Next.js), then add these
