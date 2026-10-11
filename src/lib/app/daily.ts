@@ -49,11 +49,11 @@ export async function syncDailyPrayers(channelId: string): Promise<number> {
   return added;
 }
 
-/** Sends the notification for any prayer not announced yet (newest first), one per run. */
+/** Sends the notification for the newest auto-synced prayer not announced yet (manual ones are sent from the admin). */
 export async function announcePendingPrayers(): Promise<number> {
   await appReady();
   const sql = db();
-  const pending = (await sql`select * from app_daily_prayers where notified_at is null and not hidden and published_at <= now() order by published_at desc limit 1`) as DailyPrayer[];
+  const pending = (await sql`select * from app_daily_prayers where notified_at is null and not hidden and source = 'auto' and published_at <= now() order by published_at desc limit 1`) as DailyPrayer[];
   let sent = 0;
   for (const p of pending) {
     // claim first so two overlapping runs never notify twice
@@ -62,7 +62,7 @@ export async function announcePendingPrayers(): Promise<number> {
     const { title, body } = pushTextFor(p.title);
     sent += await notify("all", title, body, { kind: "daily", id: Number(p.id) });
     // older unannounced ones are skipped so a backlog never spams
-    await sql`update app_daily_prayers set notified_at = now() where notified_at is null and id <> ${p.id}`;
+    await sql`update app_daily_prayers set notified_at = now() where notified_at is null and source = 'auto' and id <> ${p.id}`;
   }
   return sent;
 }
