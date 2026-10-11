@@ -28,24 +28,32 @@ export async function notify(audience: Audience, title: string, body: string, da
   return sent;
 }
 
+// Expo takes 100 messages per request; 5 requests go out at a time, so 5K devices are 50 requests
+// in 10 rounds instead of 50 one after another, well inside the function's time limit.
+const BATCH = 100;
+const PARALLEL = 5;
+
 export async function sendToTokens(tokens: string[], title: string, body: string, data?: PushData): Promise<number> {
   if (!tokens.length) return 0;
   const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
   if (process.env.EXPO_ACCESS_TOKEN) headers.Authorization = `Bearer ${process.env.EXPO_ACCESS_TOKEN}`;
+  const batches: Msg[][] = [];
+  for (let i = 0; i < tokens.length; i += BATCH) {
+    batches.push(tokens.slice(i, i + BATCH).map((to) => ({ to, title, body: body.slice(0, 180), data, sound: "default", channelId: data?.kind === "daily" ? "daily" : "default", priority: "high" })));
+  }
   let ok = 0;
   const dead: string[] = [];
-  for (let i = 0; i < tokens.length; i += 100) {
-    const batch: Msg[] = tokens.slice(i, i + 100).map((to) => ({ to, title, body: body.slice(0, 180), data, sound: "default", channelId: data?.kind === "daily" ? "daily" : "default", priority: "high" }));
-    try {
-      const r = await fetch("https://exp.host/--/api/v2/push/send", { method: "POST", headers, body: JSON.stringify(batch), signal: AbortSignal.timeout(15000) });
-      const json = (await r.json()) as { data?: { status: string; details?: { error?: string } }[] };
-      json.data?.forEach((t, k) => {
-        if (t.status === "ok") ok++;
-        else if (t.details?.error === "DeviceNotRegistered") dead.push(batch[k].to);
-      });
-    } catch (e) {
-      console.error("[push] batch failed:", (e as Error).message);
-    }
+  const send = async (batch: Msg[]) => {
+    const r = await fetch("https://exp.host/--/api/v2/push/send", { method: "POST", headers, body: JSON.stringify(batch), signal: AbortSignal.timeout(15000) });
+    const json = (await r.json()) as { data?: { status: string; details?: { error?: string } }[] };
+    json.data?.forEach((t, k) => {
+      if (t.status === "ok") ok++;
+      else if (t.details?.error === "DeviceNotRegistered") dead.push(batch[k].to);
+    });
+  };
+  for (let i = 0; i < batches.length; i += PARALLEL) {
+    const results = await Promise.allSettled(batches.slice(i, i + PARALLEL).map(send));
+    for (const r of results) if (r.status === "rejected") console.error("[push] batch failed:", (r.reason as Error).message);
   }
   if (dead.length) await db()`delete from app_push_tokens where token = any(${dead})`;
   return ok;

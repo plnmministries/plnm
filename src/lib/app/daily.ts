@@ -3,11 +3,15 @@ import { db } from "../db";
 import { appReady } from "./schema";
 import { notify } from "./push";
 import { latestUploads } from "./youtube-videos";
+import { DAILY_TAG, expireFeed, schedulerView } from "./feeds";
 import { cleanTitle, dateFromTitle, todayISO } from "../util";
 
 // Daily morning prayer = the channel's "Daily Word of God" video for the day.
 // The scheduler calls syncDailyPrayers(): new matching uploads become daily prayers and
 // everyone is notified once. The admin can also add one by hand (source = manual).
+// Both steps check the cached scheduler view first (feeds.ts): a tick with nothing new on YouTube
+// and nothing waiting never opens the database, which is what lets Neon sleep between videos.
+// Whenever rows change, the app's cached daily feed is expired so phones see it at once.
 
 export const isDailyWord = (title: string) => /daily\s*word/i.test(title);
 
@@ -29,10 +33,12 @@ export function pushTextFor(title: string, lang: "en" | "te" | "hi" = "en") {
 
 /** Adds new Daily Word uploads from YouTube (no notification yet). Returns how many were added. */
 export async function syncDailyPrayers(channelId: string): Promise<number> {
-  await appReady();
-  const sql = db();
   const uploads = (await latestUploads(channelId)).filter((v) => isDailyWord(v.title)).slice(0, 10);
   if (!uploads.length) return 0;
+  const { known } = await schedulerView();
+  if (uploads.every((u) => known.includes(u.id))) return 0;
+  await appReady();
+  const sql = db();
   const existing = await sql`select video_id from app_daily_prayers where video_id = any(${uploads.map((u) => u.id)})`;
   const have = new Set(existing.map((r) => r.video_id as string));
   let added = 0;
@@ -46,23 +52,32 @@ export async function syncDailyPrayers(channelId: string): Promise<number> {
               on conflict (video_id) do nothing`;
     added++;
   }
+  if (added) expireFeed(DAILY_TAG);
   return added;
 }
 
-/** Sends the notification for the newest auto-synced prayer not announced yet (manual ones are sent from the admin). */
-export async function announcePendingPrayers(): Promise<number> {
+/**
+ * Sends the notification for the newest auto-synced prayer not announced yet (manual ones are sent
+ * from the admin). Pass `changed` when rows were just inserted in this same request: the cached
+ * scheduler view only catches up once the request ends, so the database is asked directly.
+ */
+export async function announcePendingPrayers(changed = false): Promise<number> {
+  if (!changed && !(await schedulerView()).pending) return 0;
   await appReady();
   const sql = db();
   const pending = (await sql`select * from app_daily_prayers where notified_at is null and not hidden and source = 'auto' and published_at <= now() order by published_at desc limit 1`) as DailyPrayer[];
   let sent = 0;
+  let claimedAny = false;
   for (const p of pending) {
     // claim first so two overlapping runs never notify twice
     const claimed = await sql`update app_daily_prayers set notified_at = now() where id = ${p.id} and notified_at is null returning id`;
     if (!claimed.length) continue;
+    claimedAny = true;
     const { title, body } = pushTextFor(p.title);
     sent += await notify("all", title, body, { kind: "daily", id: Number(p.id) });
     // older unannounced ones are skipped so a backlog never spams
     await sql`update app_daily_prayers set notified_at = now() where notified_at is null and source = 'auto' and id <> ${p.id}`;
   }
+  if (claimedAny) expireFeed(DAILY_TAG);
   return sent;
 }

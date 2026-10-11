@@ -2,37 +2,16 @@ import { db } from "@/lib/db";
 import { appReady } from "@/lib/app/schema";
 import { userFromRequest } from "@/lib/app/auth";
 import { handler } from "@/lib/app/http";
-import { getContent } from "@/lib/content";
-import { getLiveStatus } from "@/lib/youtube-live";
-import { upcomingEvents } from "@/lib/util";
+import { feedResponse, homeFeed } from "@/lib/app/feeds";
 
-// Everything the home screen needs in one call.
+// Everything the home screen needs in one call. The feed itself comes from the cache (no database
+// read); a signed-in user additionally gets their own counters, and that response is never shared.
 export const GET = handler(async (req) => {
+  const [home, user] = await Promise.all([homeFeed(), userFromRequest(req)]);
+  if (!user) return feedResponse({ ...home, unreadReplies: 0, openRequestsForTeam: 0 });
   await appReady();
-  const sql = db();
-  const user = await userFromRequest(req);
-  const [content, prayer, updates, live] = await Promise.all([
-    getContent(),
-    sql`select id, video_id, title, for_date::text as for_date, published_at from app_daily_prayers where not hidden and published_at <= now() order by for_date desc, published_at desc limit 1`,
-    sql`select id, title, body, image, link, published_at from app_updates where not hidden and published_at <= now() order by published_at desc limit 3`,
-    getLiveStatus(await getContent().then((c) => c.settings.youtubeChannelId)).catch(() => ({ live: false, videoId: null, next: null })),
-  ]);
-  let unreadReplies = 0;
-  let openRequestsForTeam = 0;
-  if (user) {
-    const r = await sql`select count(*)::int as n from app_prayer_requests where user_id = ${user.id} and reply is not null and not reply_seen`;
-    unreadReplies = Number(r[0].n);
-    if (user.role !== "member") {
-      const o = await sql`select count(*)::int as n from app_prayer_requests where status = 'new'`;
-      openRequestsForTeam = Number(o[0].n);
-    }
-  }
-  return Response.json({
-    todayPrayer: prayer[0] || null,
-    updates,
-    live,
-    nextEvent: upcomingEvents(content)[0] || null,
-    unreadReplies,
-    openRequestsForTeam,
-  });
+  const [c] = await db()`
+    select (select count(*)::int from app_prayer_requests where user_id = ${user.id} and reply is not null and not reply_seen) as unread,
+           ${user.role !== "member" ? db()`(select count(*)::int from app_prayer_requests where status = 'new')` : db()`0`} as open`;
+  return Response.json({ ...home, unreadReplies: Number(c.unread), openRequestsForTeam: Number(c.open) }, { headers: { "Cache-Control": "private, no-store" } });
 });

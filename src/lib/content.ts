@@ -10,6 +10,9 @@ import { migrate } from "./migrate";
 //   2. from the admin app at CONTENT_API_URL/api/public/content.
 // The result sits in Next's data cache (shared by pages and route handlers) under the "content" tag;
 // Publish in the admin calls /api/revalidate, which expires that tag so changes show on the next request.
+// Because Publish does that on demand, the timed revalidation is only a safety net: an hour instead of
+// a minute means the site (and the app's /api/app/content) wakes the Neon database at most 24 times
+// a day for content, which keeps it inside the free plan's compute hours.
 
 export const CONTENT_TAG = "content";
 
@@ -27,7 +30,7 @@ const fetchPublished = unstable_cache(
     return r.json();
   },
   ["plnm-published-content"],
-  { tags: [CONTENT_TAG], revalidate: 60 },
+  { tags: [CONTENT_TAG], revalidate: 3600 },
 );
 
 // last successful copy, so a brief admin outage never takes the site down
