@@ -30,9 +30,36 @@ forms that open WhatsApp with the answers filled in.
 ## Mobile app API
 
 This project also serves the Paralokanestham mobile app ([plnmapp](https://github.com/plnmministries/plnmapp))
-under `/api/app/*`: email-code login, profiles, push tokens, daily prayers, updates, prayer requests,
-volunteer replies and attendance. Data lives in the same Neon database (tables `app_*`); the admin app
-manages it. Settings: `APP_JWT_SECRET`, `CRON_SECRET`, `SMTP_URL`, `MAIL_FROM` (see `.env.example`).
+under `/api/app/*`: username + password login, profiles, push tokens, daily prayers, updates, prayer
+requests, volunteer replies and attendance. Data lives in the same Neon database (tables `app_*`); the
+admin app manages it. Settings: `APP_JWT_SECRET`, `CRON_SECRET`, `RESEND_API_KEY`, `MAIL_FROM`
+(see `.env.example`).
+
+### App login
+
+Members sign up in the app with a username (3–20 lowercase letters, digits, dots or underscores), a
+password (8+ characters) and their name; email and phone are optional. The first account ever created
+is the admin. Passwords are stored as salted scrypt hashes; the app keeps a signed bearer token that
+`POST /api/app/auth/logout-all` (or a password reset) invalidates everywhere. Accounts can be deleted
+in-app with `POST /api/app/auth/delete-account` (Apple and Google require this).
+
+Email is used for one thing: **Forgot password** (`/api/app/auth/forgot` → `/api/app/auth/reset`)
+emails a 6-digit code through [Resend](https://resend.com) when the account has an address. Limits:
+5 reset requests per IP per hour, 10 wrong passwords per username per 15 minutes. Without
+`RESEND_API_KEY` the code is logged to the server console (and returned in the response outside
+production), which is how to test locally.
+
+To send from `no-reply@paralokanestham.in`, verify the domain once in Resend:
+
+1. Resend → **Domains → Add domain** → `paralokanestham.in` (region: pick the one nearest your users).
+2. Add the DNS records Resend lists at the domain's DNS host (where the site's own records live):
+   a TXT record at `resend._domainkey` (DKIM), an MX and a TXT record for the `send` subdomain (SPF
+   for bounces), and optionally a DMARC TXT record at `_dmarc`.
+3. Back in Resend press **Verify**; it usually turns green within minutes (DNS can take up to a day).
+4. Resend → **API Keys → Create** (sending access only) and set `RESEND_API_KEY` plus
+   `MAIL_FROM="Paralokanestham Ministries <no-reply@paralokanestham.in>"` in Vercel.
+
+Until the domain is verified, Resend only delivers to the address that owns the Resend account.
 
 The scheduler `.github/workflows/app-cron.yml` runs every 30 minutes: it adds the channel's new
 "Daily Word" video as the day's prayer and sends the notification. It needs the repository secrets

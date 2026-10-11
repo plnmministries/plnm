@@ -1,17 +1,20 @@
 import "server-only";
-import { createHash, randomInt } from "crypto";
+import { createHash, randomBytes, randomInt, scrypt as scryptCb, timingSafeEqual } from "crypto";
+import { promisify } from "util";
 import { db } from "../db";
 import { appReady, type AppUser } from "./schema";
 
-// App sessions: a signed token "uid.version.expiry.signature" the app stores and sends as
-// Authorization: Bearer. Bumping app_users.token_version signs a user out everywhere.
+// App login: username + password (scrypt, same scheme as the admin app's accounts.ts). Sessions are a
+// signed token "uid.version.expiry.signature" the app stores and sends as Authorization: Bearer.
+// Bumping app_users.token_version signs a user out everywhere. Email codes are only for password reset.
 
 const TOKEN_DAYS = 365;
 
 function secret() {
-  const s = process.env.APP_JWT_SECRET || process.env.REVALIDATE_SECRET;
-  if (!s && process.env.NODE_ENV === "production") throw new Error("APP_JWT_SECRET is not set");
-  return s || "dev-only-app-secret";
+  const s = process.env.APP_JWT_SECRET;
+  if (s) return s;
+  if (process.env.NODE_ENV === "production") throw new Error("APP_JWT_SECRET is not set");
+  return "dev-only-app-secret";
 }
 
 async function hmac(data: string) {
@@ -33,7 +36,11 @@ export async function issueToken(user: AppUser) {
   return `${body}.${await hmac(body)}`;
 }
 
-/** The signed-in user for a request, or null. Updates last_seen_at at most once a minute. */
+// last_seen_at is for the admin's "active this month" view, so once a day is plenty: at 5K users
+// a per-request write would be the busiest thing the database does.
+const SEEN_EVERY_MS = 24 * 60 * 60_000;
+
+/** The signed-in user for a request, or null. Updates last_seen_at at most once a day. */
 export async function userFromRequest(req: Request): Promise<AppUser | null> {
   const token = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim();
   if (!token) return null;
@@ -47,28 +54,119 @@ export async function userFromRequest(req: Request): Promise<AppUser | null> {
   const user = rows[0] as AppUser | undefined;
   if (!user || user.blocked || String(user.token_version) !== version) return null;
   const seen = user.last_seen_at ? new Date(user.last_seen_at).getTime() : 0;
-  if (Date.now() - seen > 60_000) db()`update app_users set last_seen_at = now() where id = ${user.id}`.catch(() => {});
+  if (Date.now() - seen > SEEN_EVERY_MS) db()`update app_users set last_seen_at = now() where id = ${user.id}`.catch(() => {});
   return user;
 }
 
-// ---- one-time codes (email now; the same table serves phone OTP later) ----
+/** Best-effort client address (Vercel sets x-forwarded-for itself, so the first entry is the caller). */
+export function clientIp(req: Request) {
+  return req.headers.get("x-forwarded-for")?.split(",")[0].trim() || req.headers.get("x-real-ip")?.trim() || "";
+}
+
+// ---- usernames and passwords ----
+
+export const USERNAME_RULE = "Username: 3 to 20 lowercase letters, numbers, dots or underscores";
+export const PASSWORD_RULE = "Password must be 8 to 100 characters";
+
+/** Lowercases and validates a username; null when it doesn't fit the rule. */
+export function normalizeUsername(v: unknown): string | null {
+  const u = typeof v === "string" ? v.trim().toLowerCase() : "";
+  return /^[a-z0-9_.]{3,20}$/.test(u) ? u : null;
+}
+
+/** Passwords are taken as typed (no trimming) so sign-up and login always agree. */
+export function readPassword(v: unknown): string | null {
+  return typeof v === "string" && v.length >= 8 && v.length <= 100 ? v : null;
+}
+
+const scrypt = promisify(scryptCb) as (pw: string, salt: string, len: number) => Promise<Buffer>;
+
+export async function hashPassword(password: string) {
+  const salt = randomBytes(16).toString("hex");
+  const hash = (await scrypt(password, salt, 64)).toString("hex");
+  return { salt, hash };
+}
+
+/** Constant-time check. Accounts without a password (never set, or reset pending) never match. */
+export async function verifyPassword(password: string, user: Pick<AppUser, "password_hash" | "password_salt"> | null | undefined) {
+  // hash against a fixed salt even when there is nothing to compare, so a missing account takes as long as a wrong password
+  const salt = user?.password_salt || "no-account";
+  const given = await scrypt(password, salt, 64);
+  if (!user?.password_hash) return false;
+  const stored = Buffer.from(user.password_hash, "hex");
+  return given.length === stored.length && timingSafeEqual(given, stored);
+}
+
+/** Finds a user by username, or by email when the identifier contains "@". */
+export async function findUser(identifier: string): Promise<AppUser | null> {
+  await appReady();
+  const id = identifier.trim().toLowerCase();
+  if (!id) return null;
+  const rows = id.includes("@") ? await db()`select * from app_users where email = ${id}` : await db()`select * from app_users where username = ${id}`;
+  return (rows[0] as AppUser | undefined) ?? null;
+}
+
+// ---- throttles (app_login_attempts) ----
+
+const LOGIN_FAILS = 10; // wrong passwords per username per 15 minutes
+const RESET_REQUESTS = 5; // password-reset requests per IP per hour (Resend's free tier is 100 emails a day)
+
+/** True once a username has had 10 wrong passwords in the last 15 minutes. */
+export async function loginLocked(username: string) {
+  await appReady();
+  const rows = await db()`select count(*)::int as n from app_login_attempts where kind = 'login' and username = ${username} and at > now() - interval '15 minutes'`;
+  return Number(rows[0].n) >= LOGIN_FAILS;
+}
+
+export async function noteFailedLogin(username: string, ip: string) {
+  await appReady();
+  await db()`insert into app_login_attempts (kind, username, ip) values ('login', ${username}, ${ip})`;
+}
+
+/** Forgets wrong-password attempts for an account, whichever identifier they were typed with. */
+export async function clearFailedLogins(user: Pick<AppUser, "username" | "email">) {
+  await appReady();
+  await db()`delete from app_login_attempts where kind = 'login' and (username = ${user.username ?? ""} or username = ${user.email ?? ""})`;
+}
+
+/**
+ * Counts a password-reset request from this IP and says whether it may go ahead (5 an hour). Counted
+ * before the account is looked up, so unknown identifiers cost the same as real ones and can't be enumerated.
+ */
+export async function allowResetRequest(ip: string) {
+  await appReady();
+  const sql = db();
+  await sql`delete from app_login_attempts where at < now() - interval '1 day'`;
+  const rows = await sql`select count(*)::int as n from app_login_attempts where kind = 'reset' and ip = ${ip} and at > now() - interval '1 hour'`;
+  if (Number(rows[0].n) >= RESET_REQUESTS) return false;
+  await sql`insert into app_login_attempts (kind, ip) values ('reset', ${ip})`;
+  return true;
+}
+
+// ---- one-time codes for password reset (sent to the account's email) ----
 
 const OTP_MINUTES = 10;
 const hashCode = (target: string, code: string) => createHash("sha256").update(`${target}:${code}:${secret()}`).digest("hex");
 
-/** Creates a 6-digit code for the target. Returns null if one was sent less than a minute ago. */
-export async function createOtp(target: string): Promise<string | null> {
+/**
+ * Creates a 6-digit code for the target and remembers who asked. Returns an error instead when one was
+ * sent less than a minute ago, or when this IP already got 5 codes in the last hour.
+ */
+export async function createOtp(target: string, ip: string): Promise<{ code: string } | { error: "recent" | "ip-limit" }> {
   await appReady();
   const sql = db();
+  const byIp = await sql`select count(*)::int as n from app_otps where ip = ${ip} and created_at > now() - interval '1 hour'`;
+  if (Number(byIp[0].n) >= RESET_REQUESTS) return { error: "ip-limit" };
   const recent = await sql`select created_at from app_otps where target = ${target} and created_at > now() - interval '60 seconds' limit 1`;
-  if (recent.length) return null;
+  if (recent.length) return { error: "recent" };
   const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
-  await sql`delete from app_otps where target = ${target} or expires_at < now()`;
-  await sql`insert into app_otps (target, code_hash, expires_at) values (${target}, ${hashCode(target, code)}, now() + ${`${OTP_MINUTES} minutes`}::interval)`;
-  return code;
+  // rows live an hour so the per-IP count above sees them; verifyOtp only ever reads the newest code per target
+  await sql`delete from app_otps where created_at < now() - interval '1 hour'`;
+  await sql`insert into app_otps (target, code_hash, ip, expires_at) values (${target}, ${hashCode(target, code)}, ${ip}, now() + ${`${OTP_MINUTES} minutes`}::interval)`;
+  return { code };
 }
 
-/** Checks a code; each wrong try counts, 5 tries burn the code. */
+/** Checks the newest code for the target; each wrong try counts, 5 tries burn the code. Success consumes it. */
 export async function verifyOtp(target: string, code: string): Promise<"ok" | "wrong" | "expired"> {
   await appReady();
   const sql = db();
@@ -79,18 +177,7 @@ export async function verifyOtp(target: string, code: string): Promise<"ok" | "w
     await sql`update app_otps set attempts = attempts + 1 where id = ${otp.id as number}`;
     return "wrong";
   }
-  await sql`delete from app_otps where target = ${target}`;
+  // consumed: expire every code for this target (rows stay for the per-IP hourly count)
+  await sql`update app_otps set expires_at = now() - interval '1 second', attempts = 5 where target = ${target}`;
   return "ok";
-}
-
-export async function findOrCreateUserByEmail(email: string): Promise<AppUser> {
-  await appReady();
-  const sql = db();
-  const found = await sql`select * from app_users where email = ${email}`;
-  if (found.length) return found[0] as AppUser;
-  // the first account ever created becomes the admin, so the client can manage the app from day one
-  const count = await sql`select count(*)::int as n from app_users`;
-  const role = Number(count[0].n) === 0 ? "admin" : "member";
-  const rows = await sql`insert into app_users (email, role) values (${email}, ${role}) returning *`;
-  return rows[0] as AppUser;
 }
