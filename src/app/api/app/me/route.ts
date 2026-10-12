@@ -4,16 +4,16 @@ import { body, fail, handler, requireUser, str } from "@/lib/app/http";
 
 export const GET = handler(async (req) => Response.json({ user: publicUser(await requireUser(req)) }));
 
-// Update own profile (name, phone, language, small photo).
+// Update own profile (name, phone, language). The photo changes through POST /api/app/uploads/avatar (+ confirm).
 export const PUT = handler(async (req) => {
   const user = await requireUser(req);
   const b = await body(req);
   const name = b.name !== undefined ? str(b.name, 80) : user.name;
   const phone = b.phone !== undefined ? str(b.phone, 20).replace(/[^\d+ ]/g, "") : user.phone;
   const lang = ["en", "te", "hi"].includes(String(b.lang)) ? String(b.lang) : user.lang;
-  const photo = b.photo !== undefined ? str(b.photo, 120_000) : user.photo;
+  if (b.photo !== undefined) return fail("Use /api/app/uploads/avatar to change the photo");
   if (b.name !== undefined && name.length < 2) return fail("Please enter your name");
-  const rows = await db()`update app_users set name = ${name}, phone = ${phone || null}, lang = ${lang}, photo = ${photo || null} where id = ${user.id} returning *`;
+  const rows = await db()`update app_users set name = ${name}, phone = ${phone || null}, lang = ${lang} where id = ${user.id} returning *`;
   return Response.json({ user: publicUser(rows[0] as never) });
 });
 

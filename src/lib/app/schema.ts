@@ -1,5 +1,6 @@
 import "server-only";
 import { db, ready } from "../db";
+import { avatarUrl } from "./storage";
 
 // Tables for the mobile app (users + login throttles, daily prayers, updates, prayer requests, volunteer attendance).
 // Created on first use, idempotent. Shared with the admin app, which manages the same tables.
@@ -108,10 +109,13 @@ export function appReady(): Promise<void> {
       lng double precision,
       accuracy double precision,
       biometric boolean not null default false,
-      selfie bytea,
+      selfie_key text,                               -- R2 key attendance/YYYY-MM-DD/{id}.jpg; the object is deleted after 15 days
       device text not null default '',
       note text not null default ''
     )`;
+    // tables created before selfies moved to R2 (the bytea column never held real data)
+    await sql`alter table app_attendance add column if not exists selfie_key text`;
+    await sql`alter table app_attendance drop column if exists selfie`;
     await sql`create index if not exists app_attendance_user on app_attendance (user_id, check_in_at desc)`;
     await sql`create table if not exists app_notifications (
       id bigserial primary key,
@@ -147,7 +151,7 @@ export type AppUser = {
   last_seen_at: Date | null;
 };
 
-/** The fields the app may see about a user. */
+/** The fields the app may see about a user. `photo` is stored as an R2 key and returned as a URL. */
 export function publicUser(u: AppUser) {
-  return { id: Number(u.id), username: u.username, email: u.email, phone: u.phone, name: u.name, photo: u.photo, role: u.role, lang: u.lang, createdAt: u.created_at };
+  return { id: Number(u.id), username: u.username, email: u.email, phone: u.phone, name: u.name, photo: avatarUrl(u.photo), role: u.role, lang: u.lang, createdAt: u.created_at };
 }
