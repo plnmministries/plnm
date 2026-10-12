@@ -3,10 +3,10 @@ import { appReady } from "@/lib/app/schema";
 import { body, fail, handler, num, requireUser } from "@/lib/app/http";
 import { attendanceKey, presignUpload, SELFIE_MAX_BYTES, SELFIE_WINDOW_MINUTES, storageConfigured } from "@/lib/app/storage";
 
-// Check-in selfie: a 5-minute presigned PUT for attendance/{YYYY-MM-DD}/{attendanceId}.jpg, only for
-// the caller's own check-in and only within 15 minutes of it (so the proof can't be swapped later).
-// The key is stored right away; GET /api/app/attendance/{id}/selfie serves it (owner or admin)
-// until the bucket's lifecycle rule deletes it after 15 days. Attendance rows are kept forever.
+// Check-in selfie, step 1 of 2: a 5-minute presigned PUT for attendance/{YYYY-MM-DD}/{attendanceId}.jpg,
+// only for the caller's own check-in and only within 15 minutes of it (so the proof can't be swapped later).
+// The key is stored by POST .../confirm once the object exists in R2; GET /api/app/attendance/{id}/selfie
+// serves it (owner or admin) until the bucket's lifecycle rule deletes it after 15 days. Attendance rows are kept forever.
 export const POST = handler(async (req) => {
   const user = await requireUser(req, ["volunteer", "admin"]);
   if (!storageConfigured()) return fail("Storage is not configured", 503);
@@ -24,6 +24,5 @@ export const POST = handler(async (req) => {
   if (Date.now() - checkInAt.getTime() > SELFIE_WINDOW_MINUTES * 60_000) return fail(`A selfie can only be added within ${SELFIE_WINDOW_MINUTES} minutes of checking in`);
   const key = attendanceKey(checkInAt, id);
   const upload = await presignUpload(key, "image/jpeg", SELFIE_MAX_BYTES, size);
-  await sql`update app_attendance set selfie_key = ${key} where id = ${id}`;
-  return Response.json({ upload, key });
+  return Response.json({ upload, key, confirm: "/api/app/uploads/attendance-selfie/confirm" });
 });

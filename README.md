@@ -131,7 +131,8 @@ Every uploaded file lives in Cloudflare R2 (S3-compatible object storage, 10 GB 
 database: profile pictures (`avatars/{userId}/{version}.jpg`), website and update images (`media/{name}`) and
 the volunteers' check-in selfies (`attendance/{YYYY-MM-DD}/{id}.jpg`). Phones upload straight to R2 with
 presigned URLs from `/api/app/uploads/*` (Vercel caps request bodies at 4.5 MB), so the API only signs URLs
-(`src/lib/app/storage.ts`). Selfies are deleted after 15 days; the attendance rows are kept forever.
+(`src/lib/app/storage.ts`). Selfies are deleted after 15 days; the attendance rows are kept forever. A selfie is attached to its check-in only after the phone calls
+`POST /api/app/uploads/attendance-selfie/confirm` with `{ attendanceId }` and the object exists in the private bucket.
 
 One-time setup in the Cloudflare dashboard (labels as of October 2026; the `paralokanestham.in` zone must be
 on Cloudflare for step 3):
