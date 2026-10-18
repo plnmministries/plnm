@@ -97,13 +97,23 @@ export async function verifyPassword(password: string, user: Pick<AppUser, "pass
   return given.length === stored.length && timingSafeEqual(given, stored);
 }
 
-/** Finds a user by username, or by email when the identifier contains "@". */
+/**
+ * Finds a user by email (contains "@"), username, or mobile number. A number is matched on its last 10 digits,
+ * so "+91 99490 10301", "09949010301" and "9949010301" are the same phone; a username wins if one is spelled
+ * the same, and a number shared by two accounts matches neither.
+ */
 export async function findUser(identifier: string): Promise<AppUser | null> {
   await appReady();
   const id = identifier.trim().toLowerCase();
   if (!id) return null;
-  const rows = id.includes("@") ? await db()`select * from app_users where email = ${id}` : await db()`select * from app_users where username = ${id}`;
-  return (rows[0] as AppUser | undefined) ?? null;
+  const sql = db();
+  if (id.includes("@")) return ((await sql`select * from app_users where email = ${id}`)[0] as AppUser | undefined) ?? null;
+  const byName = (await sql`select * from app_users where username = ${id}`)[0] as AppUser | undefined;
+  if (byName) return byName;
+  const digits = id.replace(/\D/g, "");
+  if (!/^\+?[\d\s()-]+$/.test(id) || digits.length < 10) return null;
+  const rows = await sql`select * from app_users where right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = ${digits.slice(-10)} limit 2`;
+  return rows.length === 1 ? (rows[0] as AppUser) : null;
 }
 
 // ---- throttles (app_login_attempts) ----

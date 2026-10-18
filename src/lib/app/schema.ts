@@ -100,6 +100,17 @@ export function appReady(): Promise<void> {
       created_at timestamptz not null default now()
     )`;
     await sql`create index if not exists app_prayer_requests_user on app_prayer_requests (user_id, created_at desc)`;
+    await sql`create table if not exists app_volunteer_requests (
+      id bigserial primary key,
+      user_id bigint not null references app_users(id) on delete cascade,
+      note text not null default '',
+      status text not null default 'pending',        -- pending | approved | declined
+      decided_by bigint references app_users(id) on delete set null,
+      decided_at timestamptz,
+      created_at timestamptz not null default now()
+    )`;
+    await sql`create index if not exists app_volunteer_requests_status on app_volunteer_requests (status, created_at desc)`;
+    await sql`create unique index if not exists app_volunteer_requests_one_pending on app_volunteer_requests (user_id) where status = 'pending'`;
     await sql`create table if not exists app_attendance (
       id bigserial primary key,
       user_id bigint not null references app_users(id) on delete cascade,
