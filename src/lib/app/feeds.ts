@@ -85,10 +85,21 @@ export function pageOf<T extends { id: number }>(feed: T[], before: number | nul
   return { page, complete: page.length === PAGE || feed.length < size };
 }
 
+/** The Word for today an admin last set (null until one is set; the app then shows its own daily verse). */
+export const latestVerse = unstable_cache(
+  async (): Promise<{ text: string; reference: string; setAt: string } | null> => {
+    await appReady();
+    const rows = await db()`select text, reference, created_at from app_verses order by id desc limit 1`;
+    return rows.length ? { text: rows[0].text as string, reference: rows[0].reference as string, setAt: iso(rows[0].created_at) } : null;
+  },
+  ["plnm-app-verse"],
+  { tags: [DAILY_TAG], revalidate: FEED_SECONDS },
+);
+
 /** The home screen's shared part: nothing here depends on who is asking. */
 export async function homeFeed() {
-  const [content, prayers, updates, live] = await Promise.all([getContent(), latestDaily(), latestUpdates(), liveStatus()]);
-  return { todayPrayer: prayers[0] ?? null, updates: updates.slice(0, 3), live, nextEvent: upcomingEvents(content)[0] ?? null };
+  const [content, prayers, updates, live, verse] = await Promise.all([getContent(), latestDaily(), latestUpdates(), liveStatus(), latestVerse().catch(() => null)]); // the verse is never worth failing Home for
+  return { todayPrayer: prayers[0] ?? null, updates: updates.slice(0, 3), live, nextEvent: upcomingEvents(content)[0] ?? null, verse };
 }
 
 /** Drops a cached feed so the very next request reads the database. Call after changing daily prayers or updates. */

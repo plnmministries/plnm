@@ -10,7 +10,7 @@ const MESSAGE = "If that account has an email address, a reset code is on its wa
 export const POST = handler(async (req) => {
   const b = await body(req);
   const identifier = str(b.username || b.identifier || b.email, 200).toLowerCase();
-  if (!identifier) return fail("Please enter your username or email");
+  if (!identifier) return fail("Please enter your mobile number or email");
   const ip = clientIp(req);
   if (!(await allowResetRequest(ip))) return fail("Too many reset requests from this network. Please try again in an hour.", 429);
   const user = await findUser(identifier);

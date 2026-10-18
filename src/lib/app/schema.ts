@@ -111,6 +111,13 @@ export function appReady(): Promise<void> {
     )`;
     await sql`create index if not exists app_volunteer_requests_status on app_volunteer_requests (status, created_at desc)`;
     await sql`create unique index if not exists app_volunteer_requests_one_pending on app_volunteer_requests (user_id) where status = 'pending'`;
+    await sql`create table if not exists app_verses (
+      id bigserial primary key,
+      text text not null,                            -- as typed or pasted by the admin (often Telugu)
+      reference text not null default '',
+      created_by bigint references app_users(id) on delete set null,
+      created_at timestamptz not null default now()
+    )`;
     await sql`create table if not exists app_attendance (
       id bigserial primary key,
       user_id bigint not null references app_users(id) on delete cascade,

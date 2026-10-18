@@ -3,11 +3,13 @@ import { PASSWORD_RULE, USERNAME_RULE, hashPassword, issueToken, normalizeUserna
 import { appReady, publicUser, type AppUser } from "@/lib/app/schema";
 import { body, fail, handler, str } from "@/lib/app/http";
 
-// Create an account: username + password and a name; email (used only for password reset) and phone are optional.
+// Create an account: name, mobile number and password; email is optional (it receives "forgot password" codes).
+// They sign in with the mobile number or the email. A username is still accepted from older app versions.
 export const POST = handler(async (req) => {
   const b = await body(req);
-  const username = normalizeUsername(b.username);
-  if (!username) return fail(USERNAME_RULE);
+  const rawUsername = typeof b.username === "string" ? b.username.trim() : "";
+  const username = rawUsername ? normalizeUsername(rawUsername) : null;
+  if (rawUsername && !username) return fail(USERNAME_RULE);
   const password = readPassword(b.password);
   if (!password) return fail(PASSWORD_RULE);
   const name = str(b.name, 80);
@@ -15,12 +17,15 @@ export const POST = handler(async (req) => {
   const email = str(b.email, 200).toLowerCase() || null;
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return fail("Please enter a valid email address");
   const phone = str(b.phone, 20).replace(/[^\d+ ]/g, "") || null;
+  const digits = (phone || "").replace(/\D/g, "");
+  if (!username && digits.length < 10) return fail("Please enter your 10-digit mobile number");
 
   await appReady();
   const sql = db();
-  if ((await sql`select 1 from app_users where username = ${username}`).length) return fail("That username is taken. Please pick another.", 409);
+  if (username && (await sql`select 1 from app_users where username = ${username}`).length) return fail("That username is taken. Please pick another.", 409);
   if (email && (await sql`select 1 from app_users where email = ${email}`).length) return fail("An account with this email already exists. Try “Forgot password”.", 409);
-  if (phone && (await sql`select 1 from app_users where phone = ${phone}`).length) return fail("An account with this phone number already exists.", 409);
+  if (digits && (await sql`select 1 from app_users where right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) = ${digits.slice(-10)}`).length)
+    return fail("An account with this mobile number already exists. Try signing in, or “Forgot password”.", 409);
 
   const { salt, hash } = await hashPassword(password);
   try {
